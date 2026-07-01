@@ -1,0 +1,6 @@
+{
+  "name": "Student Study Reminder",
+  "description": "Weekly study planner for students with automatic daily reminders sent via Telegram Bot.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
