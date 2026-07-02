@@ -13,6 +13,10 @@
           "type": "boolean",
           "description": "Whether the user completed the name prompt screen"
         },
+        "isAdmin": {
+          "type": "boolean",
+          "description": "Whether the user is an administrator"
+        },
         "telegram": {
           "type": "object",
           "properties": {

@@ -14,7 +14,9 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app, config.firestoreDatabaseId);
+export const db = config.firestoreDatabaseId && config.firestoreDatabaseId !== "(default)"
+  ? getFirestore(app, config.firestoreDatabaseId)
+  : getFirestore(app);
 
 export enum OperationType {
   CREATE = 'create',

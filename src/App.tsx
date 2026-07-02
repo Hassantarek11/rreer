@@ -39,11 +39,14 @@ import {
 import { auth, db, OperationType, handleFirestoreError } from './lib/firebase';
 import AuthScreen from './components/AuthScreen';
 import NemaScreen from './components/NemaScreen';
+import AdminPanel from './components/AdminPanel';
 
 export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [nemaCompleted, setNemaCompleted] = useState<boolean | null>(null);
+  const [isAdminView, setIsAdminView] = useState(false);
+  const [userIsAdmin, setUserIsAdmin] = useState(false);
 
   const [appState, setAppState] = useState<AppState>({
     tasks: [],
@@ -375,6 +378,7 @@ export default function App() {
 
     const userDocRef = doc(db, 'users', user.uid);
     const unsubscribeUser = onSnapshot(userDocRef, (docSnap) => {
+      const isEmailAdmin = user.email === 'hassantareknshshs@gmail.com' || user.email === 'admin@nema.com' || user.email?.toLowerCase().includes('admin');
       if (docSnap.exists()) {
         const data = docSnap.data();
         if (data.telegram) {
@@ -386,9 +390,15 @@ export default function App() {
           const isGoogleUser = user.providerData.some(p => p.providerId === 'google.com');
           setNemaCompleted(!isGoogleUser);
         }
+        if (data.isAdmin !== undefined) {
+          setUserIsAdmin(data.isAdmin === true);
+        } else {
+          setUserIsAdmin(isEmailAdmin);
+        }
       } else {
         const isGoogleUser = user.providerData.some(p => p.providerId === 'google.com');
         setNemaCompleted(!isGoogleUser);
+        setUserIsAdmin(isEmailAdmin);
       }
     }, (error) => {
       handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
@@ -827,6 +837,15 @@ export default function App() {
     return <AuthScreen onPrepopulateNeeded={prepopulateUserData} />;
   }
 
+  if (isAdminView) {
+    return (
+      <AdminPanel 
+        currentAdminEmail={user.email} 
+        onBackToDashboard={() => setIsAdminView(false)} 
+      />
+    );
+  }
+
   if (nemaCompleted === false) {
     return (
       <NemaScreen 
@@ -835,6 +854,8 @@ export default function App() {
       />
     );
   }
+
+  const isAdmin = userIsAdmin;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans p-4 md:p-8" dir="rtl" id="app-container">
@@ -847,18 +868,29 @@ export default function App() {
 
           {/* User Profile & Logout Header Bar */}
           <div className="relative z-10 flex justify-between items-center border-b border-white/10 pb-4 mb-4 text-[11px] sm:text-xs">
-            <div className="flex items-center gap-1.5 sm:gap-2 bg-white/10 px-2.5 py-1.5 rounded-full backdrop-blur-sm border border-white/5 max-w-[70%] truncate">
+            <div className="flex items-center gap-1.5 sm:gap-2 bg-white/10 px-2.5 py-1.5 rounded-full backdrop-blur-sm border border-white/5 max-w-[50%] truncate">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
               <span className="truncate">مرحباً، <b className="font-extrabold text-white">{user?.displayName || user?.email || 'طالب متفوق'}</b> 🎓</span>
             </div>
             
-            <button
-              onClick={() => signOut(auth)}
-              className="bg-red-500/20 hover:bg-red-500/40 text-red-100 font-bold px-2.5 py-1.5 rounded-xl border border-red-500/20 flex items-center gap-1 sm:gap-1.5 transition-all shrink-0"
-            >
-              <LogOut className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
-              تسجيل الخروج
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              {isAdmin && (
+                <button
+                  onClick={() => setIsAdminView(true)}
+                  className="bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-bold px-2.5 py-1.5 rounded-xl border border-emerald-500/20 flex items-center gap-1 transition-all"
+                >
+                  🛡️ لوحة المسؤول
+                </button>
+              )}
+              
+              <button
+                onClick={() => signOut(auth)}
+                className="bg-red-500/20 hover:bg-red-500/40 text-red-100 font-bold px-2.5 py-1.5 rounded-xl border border-red-500/20 flex items-center gap-1 sm:gap-1.5 transition-all shrink-0"
+              >
+                <LogOut className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                تسجيل الخروج
+              </button>
+            </div>
           </div>
 
           <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-5 sm:gap-6">

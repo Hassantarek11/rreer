@@ -1,10 +1,10 @@
 {
-  "projectId": "phonic-space-ktgzl",
-  "appId": "1:310357904044:web:8dd2488ecb8e776505ed09",
-  "apiKey": "AIzaSyAuA-aQ6uaTBKZfQDKhWiD_5XMcDVGWSe4",
-  "authDomain": "phonic-space-ktgzl.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-studentstudyremi-59f125f0-7185-450f-b243-a72c81cf78c8",
-  "storageBucket": "phonic-space-ktgzl.firebasestorage.app",
-  "messagingSenderId": "310357904044",
-  "measurementId": ""
+  "projectId": "student-study-reminder",
+  "appId": "1:912286802762:web:ac03817fc183be915597b3",
+  "apiKey": "AIzaSyCyiJ_C4IaTO-soI_iviislq0tFZU2J344",
+  "authDomain": "student-study-reminder.firebaseapp.com",
+  "firestoreDatabaseId": "(default)",
+  "storageBucket": "student-study-reminder.firebasestorage.app",
+  "messagingSenderId": "912286802762",
+  "measurementId": "G-JXGY010J5V"
 }

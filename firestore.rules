@@ -15,6 +15,18 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == "hassantareknshshs@gmail.com" ||
+        (request.auth.token.keys().hasAll(['email']) && (
+          request.auth.token.email == "admin@nema.com" || 
+          request.auth.token.email.matches(".*admin.*")
+        )) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true)
+      );
+    }
+
     function isValidId(id) {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
@@ -23,6 +35,7 @@ service cloud.firestore {
     function isValidUser(data) {
       return (!data.keys().hasAll(['displayName']) || data.displayName is string)
         && (!data.keys().hasAll(['nemaCompleted']) || data.nemaCompleted is bool)
+        && (!data.keys().hasAll(['isAdmin']) || data.isAdmin is bool)
         && (!data.keys().hasAll(['telegram']) || (
              data.telegram is map
              && (!data.telegram.keys().hasAll(['botToken']) || data.telegram.botToken is string)
@@ -54,23 +67,23 @@ service cloud.firestore {
 
     // 4. Match Blocks for Paths
     match /users/{userId} {
-      allow get, list: if isOwner(userId);
-      allow create: if isOwner(userId) && isValidUser(request.resource.data);
-      allow update: if isOwner(userId) && isValidUser(request.resource.data);
-      allow delete: if isOwner(userId);
+      allow get, list: if isOwner(userId) || isAdmin();
+      allow create: if (isOwner(userId) || isAdmin()) && isValidUser(request.resource.data);
+      allow update: if (isOwner(userId) || isAdmin()) && isValidUser(request.resource.data);
+      allow delete: if isOwner(userId) || isAdmin();
 
       match /tasks/{taskId} {
-        allow get, list: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidId(taskId) && isValidTask(request.resource.data);
-        allow update: if isOwner(userId) && isValidId(taskId) && isValidTask(request.resource.data);
-        allow delete: if isOwner(userId) && isValidId(taskId);
+        allow get, list: if isOwner(userId) || isAdmin();
+        allow create: if (isOwner(userId) || isAdmin()) && isValidId(taskId) && isValidTask(request.resource.data);
+        allow update: if (isOwner(userId) || isAdmin()) && isValidId(taskId) && isValidTask(request.resource.data);
+        allow delete: if (isOwner(userId) || isAdmin()) && isValidId(taskId);
       }
 
       match /lessons/{lessonId} {
-        allow get, list: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidId(lessonId) && isValidLesson(request.resource.data);
-        allow update: if isOwner(userId) && isValidId(lessonId) && isValidLesson(request.resource.data);
-        allow delete: if isOwner(userId) && isValidId(lessonId);
+        allow get, list: if isOwner(userId) || isAdmin();
+        allow create: if (isOwner(userId) || isAdmin()) && isValidId(lessonId) && isValidLesson(request.resource.data);
+        allow update: if (isOwner(userId) || isAdmin()) && isValidId(lessonId) && isValidLesson(request.resource.data);
+        allow delete: if (isOwner(userId) || isAdmin()) && isValidId(lessonId);
       }
     }
   }
