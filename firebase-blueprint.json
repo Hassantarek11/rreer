@@ -1,0 +1,71 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Represents the student profile and their preferences",
+      "type": "object",
+      "properties": {
+        "displayName": {
+          "type": "string",
+          "description": "The custom name of the student"
+        },
+        "nemaCompleted": {
+          "type": "boolean",
+          "description": "Whether the user completed the name prompt screen"
+        },
+        "telegram": {
+          "type": "object",
+          "properties": {
+            "botToken": { "type": "string" },
+            "chatId": { "type": "string" },
+            "enabled": { "type": "boolean" }
+          },
+          "required": ["botToken", "chatId", "enabled"]
+        }
+      },
+      "required": ["displayName", "nemaCompleted"]
+    },
+    "StudyTask": {
+      "title": "StudyTask",
+      "description": "A customized study task or subject review set by the student",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "day": { "type": "string" },
+        "subject": { "type": "string" },
+        "time": { "type": "string" },
+        "notes": { "type": "string" },
+        "completed": { "type": "boolean" }
+      },
+      "required": ["id", "day", "subject", "time", "completed"]
+    },
+    "StudyLesson": {
+      "title": "StudyLesson",
+      "description": "A scheduled class, center lesson, or lecture for the student",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "day": { "type": "string" },
+        "subject": { "type": "string" },
+        "time": { "type": "string" },
+        "location": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "required": ["id", "day", "subject", "time", "location"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Users profile configurations"
+    },
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": "StudyTask",
+      "description": "Tasks subcollection for each user"
+    },
+    "/users/{userId}/lessons/{lessonId}": {
+      "schema": "StudyLesson",
+      "description": "Lessons subcollection for each user"
+    }
+  }
+}

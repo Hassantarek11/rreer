@@ -24,7 +24,14 @@ function getAi(): GoogleGenAI {
     if (!key) {
       throw new Error('GEMINI_API_KEY environment variable is required');
     }
-    aiClient = new GoogleGenAI({ apiKey: key });
+    aiClient = new GoogleGenAI({
+      apiKey: key,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
   }
   return aiClient;
 }
@@ -145,15 +152,20 @@ app.delete('/api/lessons/:id', (req, res) => {
 
 // API: Get AI Advisor Tips
 app.post('/api/ai/tips', async (req, res) => {
-  const { day } = req.body;
+  const { day, tasks } = req.body;
   if (!day) {
     return res.status(400).json({ success: false, error: 'برجاء تحديد اليوم' });
   }
 
-  const state = readDb();
-  const dayTasks = state.tasks
-    .filter(t => t.day === day)
-    .sort((a, b) => a.time.localeCompare(b.time));
+  let dayTasks: StudyTask[] = [];
+  if (tasks && Array.isArray(tasks)) {
+    dayTasks = tasks.sort((a, b) => a.time.localeCompare(b.time));
+  } else {
+    const state = readDb();
+    dayTasks = state.tasks
+      .filter(t => t.day === day)
+      .sort((a, b) => a.time.localeCompare(b.time));
+  }
 
   if (dayTasks.length === 0) {
     return res.json({ 
@@ -169,7 +181,7 @@ app.post('/api/ai/tips', async (req, res) => {
     const prompt = `أنت مستشار دراسي خبير للطلاب. اكتب نصيحة ذهبية ومحفزة قصيرة جداً ومباشرة (في سطرين كحد أقصى) لتستهدف الاستفادة القصوى والإنتاجية أثناء دراسة المواد التالية اليوم:\n${tasksDescription}\n\nاجعل النصيحة مركزة وعملية ومباشرة جداً ومفيدة للقراءة السريعة مع إيموجي ملهم واحد أو اثنين فقط.`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       contents: prompt,
       config: {
         maxOutputTokens: 150,

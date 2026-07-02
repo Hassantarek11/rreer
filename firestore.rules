@@ -1,0 +1,77 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Reusable Authentication and Ownership Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // 3. Robust Type-Safe Validation Blueprints
+    function isValidUser(data) {
+      return (!data.keys().hasAll(['displayName']) || data.displayName is string)
+        && (!data.keys().hasAll(['nemaCompleted']) || data.nemaCompleted is bool)
+        && (!data.keys().hasAll(['telegram']) || (
+             data.telegram is map
+             && (!data.telegram.keys().hasAll(['botToken']) || data.telegram.botToken is string)
+             && (!data.telegram.keys().hasAll(['chatId']) || data.telegram.chatId is string)
+             && (!data.telegram.keys().hasAll(['reminderTime']) || data.telegram.reminderTime is string)
+             && (!data.telegram.keys().hasAll(['enabled']) || data.telegram.enabled is bool)
+           ));
+    }
+
+    function isValidTask(data) {
+      return (!data.keys().hasAll(['id']) || data.id is string)
+        && (!data.keys().hasAll(['day']) || data.day is string)
+        && (!data.keys().hasAll(['subject']) || data.subject is string)
+        && (!data.keys().hasAll(['time']) || data.time is string)
+        && (!data.keys().hasAll(['duration']) || data.duration is int || data.duration is number)
+        && (!data.keys().hasAll(['notes']) || data.notes is string)
+        && (!data.keys().hasAll(['completed']) || data.completed is bool);
+    }
+
+    function isValidLesson(data) {
+      return (!data.keys().hasAll(['id']) || data.id is string)
+        && (!data.keys().hasAll(['day']) || data.day is string)
+        && (!data.keys().hasAll(['subject']) || data.subject is string)
+        && (!data.keys().hasAll(['time']) || data.time is string)
+        && (!data.keys().hasAll(['location']) || data.location is string)
+        && (!data.keys().hasAll(['teacherName']) || data.teacherName is string)
+        && (!data.keys().hasAll(['notes']) || data.notes is string);
+    }
+
+    // 4. Match Blocks for Paths
+    match /users/{userId} {
+      allow get, list: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data);
+      allow delete: if isOwner(userId);
+
+      match /tasks/{taskId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(taskId) && isValidTask(request.resource.data);
+        allow update: if isOwner(userId) && isValidId(taskId) && isValidTask(request.resource.data);
+        allow delete: if isOwner(userId) && isValidId(taskId);
+      }
+
+      match /lessons/{lessonId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(lessonId) && isValidLesson(request.resource.data);
+        allow update: if isOwner(userId) && isValidId(lessonId) && isValidLesson(request.resource.data);
+        allow delete: if isOwner(userId) && isValidId(lessonId);
+      }
+    }
+  }
+}

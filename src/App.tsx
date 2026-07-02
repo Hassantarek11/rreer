@@ -22,12 +22,29 @@ import {
   RefreshCw,
   MapPin,
   User,
-  GraduationCap
+  GraduationCap,
+  LogOut
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { DayOfWeek, StudyTask, StudyLesson, TelegramConfig, AppState, DAYS_ARABIC, DAYS_ORDER } from './types.js';
+import { onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
+import { 
+  collection, 
+  doc, 
+  setDoc, 
+  deleteDoc, 
+  onSnapshot,
+  getDocs
+} from 'firebase/firestore';
+import { auth, db, OperationType, handleFirestoreError } from './lib/firebase';
+import AuthScreen from './components/AuthScreen';
+import NemaScreen from './components/NemaScreen';
 
 export default function App() {
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [nemaCompleted, setNemaCompleted] = useState<boolean | null>(null);
+
   const [appState, setAppState] = useState<AppState>({
     tasks: [],
     lessons: [],
@@ -69,7 +86,15 @@ export default function App() {
       daysOffset += 7;
     }
     
-    const [h, m] = lesson.time.split(':').map(Number);
+    let h = 12;
+    let m = 0;
+    if (lesson.time && typeof lesson.time === 'string' && lesson.time.includes(':')) {
+      const parts = lesson.time.split(':');
+      const parsedH = parseInt(parts[0], 10);
+      const parsedM = parseInt(parts[1], 10);
+      if (!isNaN(parsedH)) h = parsedH;
+      if (!isNaN(parsedM)) m = parsedM;
+    }
     const targetDate = new Date(now);
     targetDate.setDate(now.getDate() + daysOffset);
     targetDate.setHours(h, m, 0, 0);
@@ -301,42 +326,173 @@ export default function App() {
     setNotificationHistory([]);
   };
 
-  // AI tips state
+  // AI tips state with client-side caching
   const [aiTips, setAiTips] = useState('');
+  const [aiTipsCache, setAiTipsCache] = useState<Record<string, string>>({});
   const [isGeneratingTips, setIsGeneratingTips] = useState(false);
 
-  // Fetch initial state
-  const fetchState = async () => {
-    try {
-      const res = await fetch('/api/state');
-      const data = await res.json();
+  // Listen to Firebase Auth state
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Listen to real-time changes in Firestore when user is logged in
+  useEffect(() => {
+    if (!user) {
       setAppState({
-        tasks: data.tasks || [],
-        lessons: data.lessons || [],
-        telegram: data.telegram || { botToken: '', chatId: '', reminderTime: '08:00', enabled: false }
+        tasks: [],
+        lessons: [],
+        telegram: { botToken: '', chatId: '', reminderTime: '08:00', enabled: false }
       });
-    } catch (error) {
-      console.error('Error fetching application state:', error);
+      return;
+    }
+
+    const tasksQuery = collection(db, 'users', user.uid, 'tasks');
+    const unsubscribeTasks = onSnapshot(tasksQuery, (snapshot) => {
+      const tasksList: StudyTask[] = [];
+      snapshot.forEach((docSnap) => {
+        tasksList.push(docSnap.data() as StudyTask);
+      });
+      setAppState(prev => ({ ...prev, tasks: tasksList }));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/tasks`);
+    });
+
+    const lessonsQuery = collection(db, 'users', user.uid, 'lessons');
+    const unsubscribeLessons = onSnapshot(lessonsQuery, (snapshot) => {
+      const lessonsList: StudyLesson[] = [];
+      snapshot.forEach((docSnap) => {
+        lessonsList.push(docSnap.data() as StudyLesson);
+      });
+      setAppState(prev => ({ ...prev, lessons: lessonsList }));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/lessons`);
+    });
+
+    const userDocRef = doc(db, 'users', user.uid);
+    const unsubscribeUser = onSnapshot(userDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.telegram) {
+          setAppState(prev => ({ ...prev, telegram: data.telegram }));
+        }
+        if (data.nemaCompleted !== undefined) {
+          setNemaCompleted(data.nemaCompleted);
+        } else {
+          const isGoogleUser = user.providerData.some(p => p.providerId === 'google.com');
+          setNemaCompleted(!isGoogleUser);
+        }
+      } else {
+        const isGoogleUser = user.providerData.some(p => p.providerId === 'google.com');
+        setNemaCompleted(!isGoogleUser);
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
+    });
+
+    return () => {
+      unsubscribeTasks();
+      unsubscribeLessons();
+      unsubscribeUser();
+    };
+  }, [user]);
+
+  // Pre-populate data if user has a new blank account
+  const prepopulateUserData = async (userId: string, name?: string) => {
+    try {
+      const tasksRef = collection(db, 'users', userId, 'tasks');
+      let tasksSnapshot;
+      try {
+        tasksSnapshot = await getDocs(tasksRef);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.LIST, `users/${userId}/tasks`);
+        return;
+      }
+      if (!tasksSnapshot.empty) {
+        // Already has data, no need to prepopulate
+        return;
+      }
+
+      const defaultTasks: Omit<StudyTask, 'id'>[] = [
+        { day: 'saturday', subject: 'رياضيات', time: '10:00', duration: 120, notes: 'حل تمارين التفاضل والتكامل', completed: false },
+        { day: 'sunday', subject: 'فيزياء', time: '12:00', duration: 90, notes: 'مراجعة قوانين نيوتن والكهربية', completed: false },
+        { day: 'monday', subject: 'كيمياء', time: '09:00', duration: 120, notes: 'مذاكرة الكيمياء العضوية', completed: false },
+        { day: 'tuesday', subject: 'لغة عربية', time: '15:00', duration: 60, notes: 'قراءة نصوص ومذاكرة النحو', completed: false },
+        { day: 'wednesday', subject: 'لغة إنجليزية', time: '11:00', duration: 90, notes: 'مذاكرة كلمات وقواعد الوحدة الثالثة', completed: false },
+        { day: 'thursday', subject: 'أحياء', time: '14:00', duration: 120, notes: 'مراجعة فصل الوراثة', completed: false }
+      ];
+
+      const defaultLessons: Omit<StudyLesson, 'id'>[] = [
+        { day: 'saturday', subject: 'ميكانيكا', time: '16:00', location: 'سنتر الأمل', teacherName: 'أ/ أحمد محمود', notes: 'تجهيز مذكرة الشرح وحضور الحصة الأولى' },
+        { day: 'tuesday', subject: 'فيزياء', time: '18:00', location: 'أونلاين (لايف)', teacherName: 'م/ خالد جلال', notes: 'حل الواجب قبل بداية الحصة' }
+      ];
+
+      // Write default tasks
+      for (const t of defaultTasks) {
+        const ref = doc(collection(db, 'users', userId, 'tasks'));
+        try {
+          await setDoc(ref, { ...t, id: ref.id });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.CREATE, `users/${userId}/tasks/${ref.id}`);
+        }
+      }
+
+      // Write default lessons
+      for (const l of defaultLessons) {
+        const ref = doc(collection(db, 'users', userId, 'lessons'));
+        try {
+          await setDoc(ref, { ...l, id: ref.id });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.CREATE, `users/${userId}/lessons/${ref.id}`);
+        }
+      }
+
+      // Write default telegram config & user details
+      const isGoogleUser = auth.currentUser?.providerData.some(p => p.providerId === 'google.com');
+      try {
+        await setDoc(doc(db, 'users', userId), {
+          displayName: name || '',
+          nemaCompleted: name && !isGoogleUser ? true : false,
+          telegram: {
+            botToken: '',
+            chatId: '',
+            reminderTime: '08:00',
+            enabled: false
+          }
+        }, { merge: true });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `users/${userId}`);
+      }
+    } catch (e) {
+      console.error("Error pre-populating user data:", e);
+      throw e;
     }
   };
 
-  useEffect(() => {
-    fetchState();
-  }, []);
-
   // Fetch AI Tips whenever selectedDay changes, or when requested
   const generateAiTipsForSelectedDay = async (force: boolean = false) => {
-    if (!force && aiTips) return; // Avoid re-generating unnecessarily if already there
+    if (!force && aiTipsCache[selectedDay]) {
+      setAiTips(aiTipsCache[selectedDay]);
+      return;
+    }
     setIsGeneratingTips(true);
     try {
       const response = await fetch('/api/ai/tips', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ day: selectedDay })
+        body: JSON.stringify({ 
+          day: selectedDay,
+          tasks: appState.tasks.filter(t => t.day === selectedDay)
+        })
       });
       const data = await response.json();
       if (data.success) {
         setAiTips(data.tips);
+        setAiTipsCache(prev => ({ ...prev, [selectedDay]: data.tips }));
       } else {
         throw new Error(data.error || 'Failed to generate study tips');
       }
@@ -349,53 +505,54 @@ export default function App() {
         "💡 **المراجعة التراكمية**: خصص أول 10 دقائق من وقتك اليوم لمراجعة سريعة لما أنجزته بالأمس قبل البدء بمهام جديدة لبناء ترابط قوي للمعلومات."
       ];
       const randomTip = defaultTips[Math.floor(Math.random() * defaultTips.length)];
-      setAiTips(`💡 **مستشارك الدراسي (نصيحة بديلة):**\n\n${randomTip}\n\n*(مساعد الذكاء الاصطناعي مستريح حالياً، تم تفعيل بنك النصائح المدمج لتستمر رحلتك الدراسية بنجاح!)*`);
+      const fallbackTipsText = `💡 **مستشارك الدراسي (نصيحة بديلة):**\n\n${randomTip}\n\n*(مساعد الذكاء الاصطناعي مستريح حالياً، تم تفعيل بنك النصائح المدمج لتستمر رحلتك الدراسية بنجاح!)*`;
+      setAiTips(fallbackTipsText);
+      setAiTipsCache(prev => ({ ...prev, [selectedDay]: fallbackTipsText }));
     } finally {
       setIsGeneratingTips(false);
     }
   };
 
   useEffect(() => {
-    setAiTips(''); // Clear old tips
-    generateAiTipsForSelectedDay(false);
+    if (aiTipsCache[selectedDay]) {
+      setAiTips(aiTipsCache[selectedDay]);
+    } else {
+      setAiTips(''); // Clear old tips only if we don't have cached ones
+      generateAiTipsForSelectedDay(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDay]);
 
   // Handle Task Save
   const handleSaveTask = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formSubject.trim()) return;
+    if (!formSubject.trim() || !user) return;
 
-    const taskData: Partial<StudyTask> = {
+    let taskId = editingTask ? editingTask.id : '';
+    if (!taskId) {
+      const newRef = doc(collection(db, 'users', user.uid, 'tasks'));
+      taskId = newRef.id;
+    }
+
+    const taskData: StudyTask = {
+      id: taskId,
       day: selectedDay,
       subject: formSubject,
       time: formTime,
       duration: Number(formDuration),
       notes: formNotes,
-      completed: false
+      completed: editingTask ? (editingTask.completed || false) : false
     };
 
-    if (editingTask) {
-      taskData.id = editingTask.id;
-      taskData.completed = editingTask.completed || false;
-    }
-
     try {
-      const response = await fetch('/api/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(taskData)
-      });
-      const data = await response.json();
-      if (data.success) {
-        setAppState(prev => ({ ...prev, tasks: data.state.tasks, lessons: data.state.lessons || prev.lessons }));
-        setIsAddingTask(false);
-        setEditingTask(null);
-        resetTaskForm();
-        // Refresh AI tips for the modified schedule
-        generateAiTipsForSelectedDay(true);
-      }
+      await setDoc(doc(db, 'users', user.uid, 'tasks', taskId), taskData);
+      setIsAddingTask(false);
+      setEditingTask(null);
+      resetTaskForm();
+      // Refresh AI tips for the modified schedule
+      generateAiTipsForSelectedDay(true);
     } catch (error) {
-      console.error('Error saving study task:', error);
+      handleFirestoreError(error, editingTask ? OperationType.UPDATE : OperationType.CREATE, `users/${user.uid}/tasks/${taskId}`);
     }
   };
 
@@ -419,45 +576,39 @@ export default function App() {
 
   // Delete Task
   const handleDeleteTask = async (id: string) => {
+    if (!user) return;
     try {
-      const response = await fetch(`/api/tasks/${id}`, {
-        method: 'DELETE'
-      });
-      const data = await response.json();
-      if (data.success) {
-        setAppState(prev => ({ ...prev, tasks: data.state.tasks, lessons: data.state.lessons || prev.lessons }));
-        // Refresh AI tips
-        generateAiTipsForSelectedDay(true);
-      }
+      await deleteDoc(doc(db, 'users', user.uid, 'tasks', id));
+      generateAiTipsForSelectedDay(true);
     } catch (error) {
-      console.error('Error deleting task:', error);
+      handleFirestoreError(error, OperationType.DELETE, `users/${user.uid}/tasks/${id}`);
     }
   };
 
-  // Toggle Completed status client-side only for visual feedback, or we can save it
+  // Toggle Completed status
   const handleToggleCompleted = async (task: StudyTask) => {
+    if (!user) return;
     const updated = { ...task, completed: !task.completed };
     try {
-      const response = await fetch('/api/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updated)
-      });
-      const data = await response.json();
-      if (data.success) {
-        setAppState(prev => ({ ...prev, tasks: data.state.tasks, lessons: data.state.lessons || prev.lessons }));
-      }
+      await setDoc(doc(db, 'users', user.uid, 'tasks', task.id), updated);
     } catch (error) {
-      console.error('Error toggling task completion:', error);
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}/tasks/${task.id}`);
     }
   };
 
   // Handle Lesson Save
   const handleSaveLesson = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!lessonSubject.trim() || !lessonLocation.trim()) return;
+    if (!lessonSubject.trim() || !lessonLocation.trim() || !user) return;
 
-    const lessonData: Partial<StudyLesson> = {
+    let lessonId = editingLesson ? editingLesson.id : '';
+    if (!lessonId) {
+      const newRef = doc(collection(db, 'users', user.uid, 'lessons'));
+      lessonId = newRef.id;
+    }
+
+    const lessonData: StudyLesson = {
+      id: lessonId,
       day: selectedDay,
       subject: lessonSubject,
       time: lessonTime,
@@ -466,27 +617,15 @@ export default function App() {
       notes: lessonNotes
     };
 
-    if (editingLesson) {
-      lessonData.id = editingLesson.id;
-    }
-
     try {
-      const response = await fetch('/api/lessons', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(lessonData)
-      });
-      const data = await response.json();
-      if (data.success) {
-        setAppState(prev => ({ ...prev, tasks: data.state.tasks || prev.tasks, lessons: data.state.lessons }));
-        setIsAddingLesson(false);
-        setEditingLesson(null);
-        resetLessonForm();
-        // Refresh AI tips
-        generateAiTipsForSelectedDay(true);
-      }
+      await setDoc(doc(db, 'users', user.uid, 'lessons', lessonId), lessonData);
+      setIsAddingLesson(false);
+      setEditingLesson(null);
+      resetLessonForm();
+      // Refresh AI tips
+      generateAiTipsForSelectedDay(true);
     } catch (error) {
-      console.error('Error saving study lesson:', error);
+      handleFirestoreError(error, editingLesson ? OperationType.UPDATE : OperationType.CREATE, `users/${user.uid}/lessons/${lessonId}`);
     }
   };
 
@@ -509,18 +648,12 @@ export default function App() {
   };
 
   const handleDeleteLesson = async (id: string) => {
+    if (!user) return;
     try {
-      const response = await fetch(`/api/lessons/${id}`, {
-        method: 'DELETE'
-      });
-      const data = await response.json();
-      if (data.success) {
-        setAppState(prev => ({ ...prev, tasks: data.state.tasks || prev.tasks, lessons: data.state.lessons }));
-        // Refresh AI tips
-        generateAiTipsForSelectedDay(true);
-      }
+      await deleteDoc(doc(db, 'users', user.uid, 'lessons', id));
+      generateAiTipsForSelectedDay(true);
     } catch (error) {
-      console.error('Error deleting lesson:', error);
+      handleFirestoreError(error, OperationType.DELETE, `users/${user.uid}/lessons/${id}`);
     }
   };
 
@@ -549,7 +682,15 @@ export default function App() {
     });
 
     todayLessons.forEach(lesson => {
-      const [lHours, lMinutes] = lesson.time.split(':').map(Number);
+      let lHours = 12;
+      let lMinutes = 0;
+      if (lesson.time && typeof lesson.time === 'string' && lesson.time.includes(':')) {
+        const parts = lesson.time.split(':');
+        const parsedH = parseInt(parts[0], 10);
+        const parsedM = parseInt(parts[1], 10);
+        if (!isNaN(parsedH)) lHours = parsedH;
+        if (!isNaN(parsedM)) lMinutes = parsedM;
+      }
       const lessonDate = new Date(now);
       lessonDate.setHours(lHours, lMinutes, 0, 0);
 
@@ -653,44 +794,96 @@ export default function App() {
 
   // Format Time to 12h for Display (Arabic)
   const formatTimeDisplay = (timeStr: string): string => {
-    const [h, m] = timeStr.split(':').map(Number);
-    const period = h >= 12 ? 'مساءً' : 'صباحاً';
-    const hours12 = h % 12 === 0 ? 12 : h % 12;
-    return `${hours12}:${String(m).padStart(2, '0')} ${period}`;
+    if (!timeStr || typeof timeStr !== 'string' || !timeStr.includes(':')) {
+      return timeStr || '';
+    }
+    try {
+      const parts = timeStr.split(':');
+      let h = parseInt(parts[0], 10);
+      let m = parseInt(parts[1], 10);
+      if (isNaN(h)) h = 12;
+      if (isNaN(m)) m = 0;
+      
+      const period = h >= 12 ? 'مساءً' : 'صباحاً';
+      const hours12 = h % 12 === 0 ? 12 : h % 12;
+      return `${hours12}:${String(m).padStart(2, '0')} ${period}`;
+    } catch {
+      return timeStr;
+    }
   };
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col justify-center items-center p-4 font-sans text-white" dir="rtl">
+        <div className="space-y-4 text-center">
+          <RefreshCw className="w-10 h-10 animate-spin mx-auto text-indigo-500" />
+          <h3 className="font-bold text-sm">جاري تحميل المنظم الدراسي...</h3>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthScreen onPrepopulateNeeded={prepopulateUserData} />;
+  }
+
+  if (nemaCompleted === false) {
+    return (
+      <NemaScreen 
+        defaultName={user.displayName || ''} 
+        onCompleted={() => setNemaCompleted(true)} 
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans p-4 md:p-8" dir="rtl" id="app-container">
       <div className="max-w-6xl mx-auto space-y-8">
         
         {/* Top Header Card */}
-        <header className="bg-gradient-to-r from-blue-600 via-indigo-600 to-indigo-700 rounded-3xl p-6 md:p-8 text-white shadow-xl relative overflow-hidden" id="main-header">
+        <header className="bg-gradient-to-r from-blue-600 via-indigo-600 to-indigo-700 rounded-2xl md:rounded-3xl p-4 sm:p-6 md:p-8 text-white shadow-xl relative overflow-hidden" id="main-header">
           <div className="absolute top-0 left-0 w-64 h-64 bg-white/10 rounded-full -translate-x-20 -translate-y-20 blur-3xl pointer-events-none"></div>
           <div className="absolute bottom-0 right-0 w-80 h-80 bg-indigo-500/20 rounded-full translate-x-10 translate-y-20 blur-2xl pointer-events-none"></div>
 
-          <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-6">
-            <div className="space-y-2">
-              <span className="bg-indigo-500/40 text-indigo-100 text-xs font-semibold px-3 py-1 rounded-full border border-indigo-400/30 inline-flex items-center gap-1.5">
-                <Clock3 className="w-3.5 h-3.5" />
+          {/* User Profile & Logout Header Bar */}
+          <div className="relative z-10 flex justify-between items-center border-b border-white/10 pb-4 mb-4 text-[11px] sm:text-xs">
+            <div className="flex items-center gap-1.5 sm:gap-2 bg-white/10 px-2.5 py-1.5 rounded-full backdrop-blur-sm border border-white/5 max-w-[70%] truncate">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
+              <span className="truncate">مرحباً، <b className="font-extrabold text-white">{user?.displayName || user?.email || 'طالب متفوق'}</b> 🎓</span>
+            </div>
+            
+            <button
+              onClick={() => signOut(auth)}
+              className="bg-red-500/20 hover:bg-red-500/40 text-red-100 font-bold px-2.5 py-1.5 rounded-xl border border-red-500/20 flex items-center gap-1 sm:gap-1.5 transition-all shrink-0"
+            >
+              <LogOut className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+              تسجيل الخروج
+            </button>
+          </div>
+
+          <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-5 sm:gap-6">
+            <div className="space-y-2 text-right">
+              <span className="bg-indigo-500/40 text-indigo-100 text-[10px] sm:text-xs font-semibold px-2.5 py-1 rounded-full border border-indigo-400/30 inline-flex items-center gap-1.5">
+                <Clock3 className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                 تخطيط وجدولة دراسية متكاملة (مذاكرة + دروس)
               </span>
-              <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight">نظام مُذكِّر الطالب الدراسي الشامل 📚✨</h1>
-              <p className="text-indigo-100 max-w-xl text-sm md:text-base">
+              <h1 className="text-2xl sm:text-3xl md:text-4xl font-extrabold tracking-tight leading-snug sm:leading-none">نظام مُذكِّر الطالب الدراسي الشامل 📚✨</h1>
+              <p className="text-indigo-100 max-w-xl text-xs sm:text-sm md:text-base leading-relaxed">
                 نظم جدول مذاكرتك اليومي وسجل مواعيد حصص الدروس الخارجية، وسيتكفل النظام بإرسال تقرير مدمج وشامل لجدولك على حساب التليجرام الخاص بك كل صباح!
               </p>
             </div>
 
-            {/* Daily Stat Badge */}
-            <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/10 min-w-[200px] flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-amber-400 text-slate-900 flex items-center justify-center font-bold text-xl shadow-lg">
+            {/* Daily Stat Badge - Full width on mobile, auto width on desktop */}
+            <div className="bg-white/10 backdrop-blur-md rounded-2xl p-3.5 sm:p-4 border border-white/10 w-full md:w-auto min-w-[200px] flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-amber-400 text-slate-900 flex items-center justify-center font-extrabold text-xl shadow-lg shrink-0">
                 %{completionPercentage}
               </div>
-              <div>
+              <div className="flex-grow">
                 <h4 className="text-xs text-indigo-200 font-medium">إنجاز خطة اليوم ({DAYS_ARABIC[todayDayOfWeek].arabic})</h4>
-                <p className="text-sm font-bold mt-0.5">
+                <p className="text-sm font-bold mt-0.5 whitespace-nowrap">
                   {todayCompletedTasks.length} من أصل {todayTasks.length} مواد مذاكرة
                 </p>
-                <div className="w-24 bg-white/20 h-1.5 rounded-full mt-1.5 overflow-hidden">
+                <div className="w-full md:w-24 bg-white/20 h-1.5 rounded-full mt-1.5 overflow-hidden">
                   <div className="bg-amber-400 h-full" style={{ width: `${completionPercentage}%` }}></div>
                 </div>
               </div>
@@ -700,11 +893,16 @@ export default function App() {
 
         {/* Horizontal Days Calendar */}
         <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100" id="calendar-bar">
-          <h2 className="text-sm font-bold text-slate-400 mb-3 flex items-center gap-2">
-            <Calendar className="w-4 h-4 text-indigo-500" />
-            اختر اليوم لعرض وتعديل الجدول الدراسي والحصص المحددة:
-          </h2>
-          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-bold text-slate-400 flex items-center gap-2">
+              <Calendar className="w-4 h-4 text-indigo-500" />
+              اختر اليوم لعرض وتعديل الجدول الدراسي والحصص المحددة:
+            </h2>
+            <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full md:hidden font-medium">
+              اسحب جانباً لعرض باقي الأيام ↔️
+            </span>
+          </div>
+          <div className="flex overflow-x-auto pb-3 pt-1 -mx-4 px-4 md:mx-0 md:px-0 md:grid md:grid-cols-7 gap-2 scrollbar-none snap-x snap-mandatory">
             {DAYS_ORDER.map((day) => {
               const isSelected = selectedDay === day;
               const isToday = getTodayDayOfWeek() === day;
@@ -716,7 +914,7 @@ export default function App() {
                   key={day}
                   onClick={() => setSelectedDay(day)}
                   id={`day-btn-${day}`}
-                  className={`relative p-3 rounded-xl transition-all duration-200 text-right flex flex-col justify-between h-24 ${
+                  className={`relative p-3 rounded-xl transition-all duration-200 text-right flex flex-col justify-between h-24 shrink-0 w-28 md:w-auto snap-start ${
                     isSelected 
                       ? 'bg-indigo-600 text-white shadow-md shadow-indigo-100 ring-2 ring-indigo-600 ring-offset-2' 
                       : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-100'
@@ -755,7 +953,7 @@ export default function App() {
             <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
               
               {/* Header Title with tabs */}
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-4 mb-6">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-4 mb-6">
                 <div>
                   <h3 className="text-xl font-extrabold text-slate-800">
                     جدول وتفاصيل يوم {DAYS_ARABIC[selectedDay].arabic}
@@ -763,11 +961,11 @@ export default function App() {
                   <p className="text-xs text-slate-400 mt-0.5">تنظيم المذاكرة الذاتية ومواعيد الحصص والدروس الخارجية بالتوازي</p>
                 </div>
 
-                {/* Main Tab Selector */}
-                <div className="flex bg-slate-100 p-1 rounded-xl" id="schedule-tabs">
+                {/* Main Tab Selector - Optimized for full touch stretch on mobile */}
+                <div className="flex bg-slate-100 p-1 rounded-xl w-full lg:w-auto" id="schedule-tabs">
                   <button
                     onClick={() => setActiveTab('study')}
-                    className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-150 ${
+                    className={`flex-1 lg:flex-none text-center px-3.5 py-2 rounded-lg text-xs font-extrabold transition-all duration-150 ${
                       activeTab === 'study'
                         ? 'bg-white text-indigo-600 shadow-sm'
                         : 'text-slate-500 hover:text-slate-800'
@@ -777,7 +975,7 @@ export default function App() {
                   </button>
                   <button
                     onClick={() => setActiveTab('lessons')}
-                    className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-150 ${
+                    className={`flex-1 lg:flex-none text-center px-3.5 py-2 rounded-lg text-xs font-extrabold transition-all duration-150 ${
                       activeTab === 'lessons'
                         ? 'bg-white text-indigo-600 shadow-sm'
                         : 'text-slate-500 hover:text-slate-800'
@@ -792,8 +990,8 @@ export default function App() {
               {activeTab === 'study' && (
                 <div className="space-y-4" id="study-tab-content">
                   
-                  {/* Action Header bar inside Tab */}
-                  <div className="flex items-center justify-between pb-2">
+                  {/* Action Header bar inside Tab - Mobile-First Collapsible/Stacked Layout */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-100 sm:border-b-0">
                     <span className="text-xs font-extrabold text-slate-500">خطة المذاكرة الفردية الذاتية للمواد والواجبات</span>
                     <button
                       onClick={() => {
@@ -802,9 +1000,9 @@ export default function App() {
                         setIsAddingTask(true);
                       }}
                       id="add-task-trigger"
-                      className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs px-3 py-2 rounded-lg shadow-sm transition-all flex items-center gap-1"
+                      className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs px-4 py-2.5 rounded-xl shadow-sm transition-all flex items-center justify-center gap-1.5"
                     >
-                      <Plus className="w-3.5 h-3.5" />
+                      <Plus className="w-4 h-4" />
                       إضافة مادة مذاكرة
                     </button>
                   </div>
@@ -850,7 +1048,7 @@ export default function App() {
                               />
                             </div>
 
-                            <div className="grid grid-cols-2 gap-3">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                               <div className="space-y-1">
                                 <label className="text-xs font-bold text-slate-600 block">وقت البدء</label>
                                 <input
@@ -1027,8 +1225,8 @@ export default function App() {
               {activeTab === 'lessons' && (
                 <div className="space-y-4" id="lessons-tab-content">
                   
-                  {/* Action Header bar for Lesson */}
-                  <div className="flex items-center justify-between pb-2">
+                  {/* Action Header bar for Lesson - Mobile-First Collapsible/Stacked Layout */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-100 sm:border-b-0">
                     <span className="text-xs font-extrabold text-slate-500">حصص الدروس والسناتر والمحاضرات الخارجية والأونلاين</span>
                     <button
                       onClick={() => {
@@ -1037,9 +1235,9 @@ export default function App() {
                         setIsAddingLesson(true);
                       }}
                       id="add-lesson-trigger"
-                      className="bg-amber-500 hover:bg-amber-600 text-white font-semibold text-xs px-3 py-2 rounded-lg shadow-sm transition-all flex items-center gap-1"
+                      className="w-full sm:w-auto bg-amber-500 hover:bg-amber-600 text-white font-semibold text-xs px-4 py-2.5 rounded-xl shadow-sm transition-all flex items-center justify-center gap-1.5"
                     >
-                      <Plus className="w-3.5 h-3.5" />
+                      <Plus className="w-4 h-4" />
                       إضافة موعد درس (سنتر/أونلاين)
                     </button>
                   </div>
@@ -1085,7 +1283,7 @@ export default function App() {
                               />
                             </div>
 
-                            <div className="grid grid-cols-2 gap-3">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                               <div className="space-y-1">
                                 <label className="text-xs font-bold text-slate-600 block">وقت الدرس (الساعة)</label>
                                 <input
