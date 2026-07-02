@@ -34,7 +34,10 @@ import {
   setDoc, 
   deleteDoc, 
   onSnapshot,
-  getDocs
+  getDocs,
+  query,
+  orderBy,
+  limit
 } from 'firebase/firestore';
 import { auth, db, OperationType, handleFirestoreError } from './lib/firebase';
 import AuthScreen from './components/AuthScreen';
@@ -47,6 +50,7 @@ export default function App() {
   const [nemaCompleted, setNemaCompleted] = useState<boolean | null>(null);
   const [isAdminView, setIsAdminView] = useState(false);
   const [userIsAdmin, setUserIsAdmin] = useState(false);
+  const [deviceId] = useState(() => Math.random().toString(36).substring(2, 15));
 
   const [appState, setAppState] = useState<AppState>({
     tasks: [],
@@ -318,11 +322,29 @@ export default function App() {
     }
   };
 
-  const testLocalNotification = () => {
-    triggerLocalNotification(
-      '🧪 إشعار تجريبي من المنظم الدراسي',
-      'هكذا ستصلك إشعارات وتنبيهات الدروس والحصص مباشرة على شاشة هاتفك المحمول!'
-    );
+  const testLocalNotification = async () => {
+    const title = '🧪 إشعار تجريبي من المنظم الدراسي';
+    const body = 'هكذا ستصلك إشعارات وتنبيهات الدروس والحصص مباشرة على شاشة هاتف الطالب!';
+    
+    // Play locally on the sending device immediately
+    triggerLocalNotification(title, body);
+
+    // If logged in, send a signal document to Firestore to broadcast it to other devices
+    if (user) {
+      try {
+        const notificationsSignalRef = collection(db, 'users', user.uid, 'notifications_signal');
+        const docId = Math.random().toString(36).substring(2, 15);
+        await setDoc(doc(notificationsSignalRef, docId), {
+          id: docId,
+          title,
+          body,
+          createdAt: Date.now(),
+          senderDeviceId: deviceId
+        });
+      } catch (err) {
+        console.error("Error sending notification signal to Firestore:", err);
+      }
+    }
   };
 
   const clearNotificationHistory = () => {
@@ -404,10 +426,48 @@ export default function App() {
       handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
     });
 
+    const adminDocRef = doc(db, 'admins', 'admin');
+    const unsubscribeAdmin = onSnapshot(adminDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        const dbUsername = data.username?.toLowerCase() || 'hassan';
+        const isEmailAdmin = user.email === 'hassantareknshshs@gmail.com' || 
+                             user.email === 'admin@nema.com' || 
+                             user.email?.toLowerCase().includes('admin') || 
+                             user.email?.toLowerCase().includes(dbUsername);
+        setUserIsAdmin(isEmailAdmin);
+      } else {
+        const isEmailAdmin = user.email === 'hassantareknshshs@gmail.com' || user.email === 'admin@nema.com' || user.email?.toLowerCase().includes('admin');
+        setUserIsAdmin(isEmailAdmin);
+      }
+    }, (error) => {
+      console.error("Error reading admin config from database:", error);
+    });
+
+    // Real-time listener for multi-device notification broadcasts
+    const listenerStartTime = Date.now();
+    const notificationsSignalQuery = collection(db, 'users', user.uid, 'notifications_signal');
+    const unsubscribeNotificationsSignal = onSnapshot(notificationsSignalQuery, (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const data = change.doc.data();
+          // Only trigger if the notification is newer than when this app instance mounted/subscribed,
+          // and if it wasn't sent by this device itself (which already triggered it locally)
+          if (data.createdAt && data.createdAt > listenerStartTime && data.senderDeviceId !== deviceId) {
+            triggerLocalNotification(data.title || '🔔 تنبيه جديد', data.body || '');
+          }
+        }
+      });
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/notifications_signal`);
+    });
+
     return () => {
       unsubscribeTasks();
       unsubscribeLessons();
       unsubscribeUser();
+      unsubscribeAdmin();
+      unsubscribeNotificationsSignal();
     };
   }, [user]);
 

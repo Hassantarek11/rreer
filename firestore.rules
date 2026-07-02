@@ -17,13 +17,11 @@ service cloud.firestore {
 
     function isAdmin() {
       return isSignedIn() && (
-        request.auth.token.email == "hassantareknshshs@gmail.com" ||
-        (request.auth.token.keys().hasAll(['email']) && (
-          request.auth.token.email == "admin@nema.com" || 
-          request.auth.token.email.matches(".*admin.*")
-        )) ||
+        request.auth.token.get('email', '') == "hassantareknshshs@gmail.com" ||
+        request.auth.token.get('email', '') == "admin@nema.com" || 
+        request.auth.token.get('email', '').matches(".*admin.*") ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true)
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isAdmin', false) == true)
       );
     }
 
@@ -65,7 +63,20 @@ service cloud.firestore {
         && (!data.keys().hasAll(['notes']) || data.notes is string);
     }
 
+    function isValidNotificationSignal(data) {
+      return (!data.keys().hasAll(['id']) || data.id is string)
+        && (!data.keys().hasAll(['title']) || data.title is string)
+        && (!data.keys().hasAll(['body']) || data.body is string)
+        && (!data.keys().hasAll(['createdAt']) || data.createdAt is int || data.createdAt is number)
+        && (!data.keys().hasAll(['senderDeviceId']) || data.senderDeviceId is string);
+    }
+
     // 4. Match Blocks for Paths
+    match /admins/{adminId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     match /users/{userId} {
       allow get, list: if isOwner(userId) || isAdmin();
       allow create: if (isOwner(userId) || isAdmin()) && isValidUser(request.resource.data);
@@ -84,6 +95,12 @@ service cloud.firestore {
         allow create: if (isOwner(userId) || isAdmin()) && isValidId(lessonId) && isValidLesson(request.resource.data);
         allow update: if (isOwner(userId) || isAdmin()) && isValidId(lessonId) && isValidLesson(request.resource.data);
         allow delete: if (isOwner(userId) || isAdmin()) && isValidId(lessonId);
+      }
+
+      match /notifications_signal/{notificationId} {
+        allow get, list: if isOwner(userId) || isAdmin();
+        allow create, update: if (isOwner(userId) || isAdmin()) && isValidId(notificationId) && isValidNotificationSignal(request.resource.data);
+        allow delete: if (isOwner(userId) || isAdmin()) && isValidId(notificationId);
       }
     }
   }

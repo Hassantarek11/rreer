@@ -4,7 +4,8 @@ import {
   createUserWithEmailAndPassword, 
   signInWithPopup,
   GoogleAuthProvider,
-  updateProfile
+  updateProfile,
+  updatePassword
 } from 'firebase/auth';
 import { auth, db } from '../lib/firebase';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
@@ -38,9 +39,12 @@ export default function AuthScreen({ onPrepopulateNeeded }: AuthScreenProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [isDomainError, setIsDomainError] = useState(false);
 
   const handleTranslateError = (code: string) => {
     switch (code) {
+      case 'auth/unauthorized-domain':
+        return 'عذراً! نطاق هذا التطبيق الحالي غير مصرح له باستخدام المصادقة في مشروع Firebase الخاص بك (auth/unauthorized-domain).';
       case 'auth/invalid-credential':
       case 'auth/wrong-password':
       case 'auth/user-not-found':
@@ -60,9 +64,14 @@ export default function AuthScreen({ onPrepopulateNeeded }: AuthScreenProps) {
     }
   };
 
+  const clearErrors = () => {
+    setError(null);
+    setIsDomainError(false);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
+    clearErrors();
     setSuccess(null);
 
     if (!email.trim() || !password.trim()) {
@@ -92,19 +101,90 @@ export default function AuthScreen({ onPrepopulateNeeded }: AuthScreenProps) {
         setSuccess('تم إنشاء حسابك بنجاح! جاري تحويلك...');
       } else {
         // Log In
-        await signInWithEmailAndPassword(auth, email, password);
+        let emailToUse = email.trim();
+        let passwordToUse = password;
+
+        try {
+          const adminDocRef = doc(db, 'admins', 'admin');
+          const adminDocSnap = await getDoc(adminDocRef);
+          if (adminDocSnap.exists()) {
+            const adminData = adminDocSnap.data();
+            const dbUsername = adminData.username || 'hassan';
+            const dbPassword = adminData.password || '01126269124hassan';
+
+            const enteredUser = email.trim().toLowerCase();
+            if (
+              (enteredUser === dbUsername.toLowerCase() || 
+               enteredUser === 'hassantareknshshs@gmail.com' || 
+               enteredUser === 'admin@nema.com') && 
+              password === dbPassword
+            ) {
+              emailToUse = 'hassantareknshshs@gmail.com';
+              passwordToUse = dbPassword;
+              
+              try {
+                await signInWithEmailAndPassword(auth, emailToUse, passwordToUse);
+              } catch (signInErr: any) {
+                if (signInErr.code === 'auth/wrong-password' || signInErr.code === 'auth/invalid-credential' || signInErr.message?.includes('password') || signInErr.message?.includes('credential')) {
+                  try {
+                    // Try with original default password
+                    const defaultPass = '01126269124hassan';
+                    const userCredential = await signInWithEmailAndPassword(auth, emailToUse, defaultPass);
+                    
+                    // Success! Now update the password in Firebase Auth to the new one from Firestore
+                    await updatePassword(userCredential.user, passwordToUse);
+                    console.log("Successfully synchronized Firebase Auth password with Firestore admin password.");
+                  } catch (updateErr) {
+                    console.error("Could not auto-sync changed password:", updateErr);
+                    throw signInErr;
+                  }
+                } else if (signInErr.code === 'auth/user-not-found' || signInErr.message?.includes('user-not-found')) {
+                  // Create user if not exists
+                  const userCredential = await createUserWithEmailAndPassword(auth, emailToUse, passwordToUse);
+                  await updateProfile(userCredential.user, { displayName: 'Hassan (Admin)' });
+                  await onPrepopulateNeeded(userCredential.user.uid);
+                  
+                  // Mark the user as isAdmin in users/{userId} document
+                  await setDoc(doc(db, 'users', userCredential.user.uid), {
+                    displayName: 'Hassan (Admin)',
+                    email: emailToUse,
+                    nemaCompleted: true,
+                    isAdmin: true
+                  }, { merge: true });
+                } else {
+                  throw signInErr;
+                }
+              }
+
+              setSuccess('مرحباً بك يا مسؤول النظام! تم تسجيل الدخول بنجاح.');
+              setLoading(false);
+              return;
+            }
+          }
+        } catch (adminErr) {
+          console.error("Non-blocking error checking database admin document:", adminErr);
+        }
+
+        await signInWithEmailAndPassword(auth, emailToUse, passwordToUse);
         setSuccess('تم تسجيل الدخول بنجاح! جاري تحميل جدولك...');
       }
     } catch (err: any) {
       console.error(err);
-      setError(handleTranslateError(err.code || ''));
+      const errCode = err.code || '';
+      const errMsg = err.message || '';
+      if (errCode === 'auth/unauthorized-domain' || errMsg.includes('unauthorized-domain') || errMsg.includes('auth/unauthorized-domain')) {
+        setIsDomainError(true);
+        setError(handleTranslateError('auth/unauthorized-domain'));
+      } else {
+        setError(handleTranslateError(errCode));
+      }
     } finally {
       setLoading(false);
     }
   };
 
   const handleGoogleSignIn = async () => {
-    setError(null);
+    clearErrors();
     setLoading(true);
     try {
       const provider = new GoogleAuthProvider();
@@ -117,7 +197,12 @@ export default function AuthScreen({ onPrepopulateNeeded }: AuthScreenProps) {
       setSuccess('مرحباً بك! تم تسجيل الدخول بواسطة Google بنجاح.');
     } catch (err: any) {
       console.error(err);
-      if (err.code === 'auth/popup-closed-by-user') {
+      const errCode = err.code || '';
+      const errMsg = err.message || '';
+      if (errCode === 'auth/unauthorized-domain' || errMsg.includes('unauthorized-domain') || errMsg.includes('auth/unauthorized-domain')) {
+        setIsDomainError(true);
+        setError(handleTranslateError('auth/unauthorized-domain'));
+      } else if (errCode === 'auth/popup-closed-by-user') {
         setError('تم إغلاق نافذة تسجيل الدخول من Google قبل إتمام العملية.');
       } else {
         setError('فشل تسجيل الدخول بواسطة Google. يرجى التأكد من تشغيل التطبيق في نافذة خارجية إذا واجهت مشكلة.');
@@ -184,10 +269,36 @@ export default function AuthScreen({ onPrepopulateNeeded }: AuthScreenProps) {
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
               exit={{ opacity: 0, height: 0 }}
-              className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 flex items-start gap-2.5 text-xs text-red-400"
+              className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 flex flex-col gap-2 text-xs text-red-400 animate-none"
             >
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{error}</span>
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{error}</span>
+              </div>
+              
+              {isDomainError && (
+                <div className="mt-2 p-3 bg-slate-900/80 rounded-xl border border-red-500/10 space-y-2 text-slate-300">
+                  <div className="font-extrabold text-amber-400 flex items-center gap-1.5 text-[11px]">
+                    ⚠️ خطوات تفعيل نطاق التطبيق في Firebase Console:
+                  </div>
+                  <p className="text-[10px] text-slate-400 leading-relaxed">
+                    منع مشروع الفايربيس الخاص بك تسجيل الدخول لأن هذا النطاق غير مصرح له بعد. لحل هذا، يرجى القيام بالتالي:
+                  </p>
+                  <ol className="list-decimal list-inside space-y-1 text-[10px] text-slate-300 pr-1 leading-relaxed">
+                    <li>افتح <a href="https://console.firebase.google.com/" target="_blank" rel="noopener noreferrer" className="text-indigo-400 underline hover:text-indigo-300 font-bold">وحدة تحكم Firebase (Console)</a> ثم اختر مشروعك.</li>
+                    <li>من القائمة الجانبية، اذهب إلى <b>Authentication</b> ثم تبويب <b>Settings</b>.</li>
+                    <li>اضغط على <b>Authorized domains</b> ثم زر <b>Add domain</b>.</li>
+                    <li>قم بنسخ وإضافة النطاق التالي للمشروع:
+                      <div className="mt-1 bg-slate-950 p-1.5 rounded font-mono text-[9px] text-slate-300 text-center select-all border border-slate-800 break-all">
+                        {window.location.hostname}
+                      </div>
+                    </li>
+                  </ol>
+                  <p className="text-[10px] text-amber-500 font-extrabold leading-relaxed pt-1">
+                    💡 بعد إضافة النطاق، قم بتحديث الصفحة (Reload) وحاول مجدداً!
+                  </p>
+                </div>
+              )}
             </motion.div>
           )}
 

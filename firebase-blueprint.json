@@ -56,6 +56,19 @@
         "notes": { "type": "string" }
       },
       "required": ["id", "day", "subject", "time", "location"]
+    },
+    "NotificationSignal": {
+      "title": "NotificationSignal",
+      "description": "Real-time notifications sent to synchronise multiple logged in devices",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "senderDeviceId": { "type": "string" }
+      },
+      "required": ["id", "title", "body", "createdAt"]
     }
   },
   "firestore": {
@@ -70,6 +83,10 @@
     "/users/{userId}/lessons/{lessonId}": {
       "schema": "StudyLesson",
       "description": "Lessons subcollection for each user"
+    },
+    "/users/{userId}/notifications_signal/{notificationId}": {
+      "schema": "NotificationSignal",
+      "description": "Notification signals subcollection for each user"
     }
   }
 }
